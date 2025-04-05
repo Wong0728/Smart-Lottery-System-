@@ -1,0 +1,1136 @@
+import tkinter as tk
+from tkinter import font, messagebox, ttk, simpledialog, filedialog
+from datetime import datetime, timedelta, time
+import random
+import os
+import sys
+import hashlib
+import pickle
+import ctypes
+import base64
+from collections import defaultdict
+
+# 加密密钥
+ENCRYPTION_KEY = b'xQ9!pL3$kZ8#wR5&vN2^mY7*cU1@qS6%fT4(oJ0)hB9_gD8+eK7-lH6=iO5'
+
+def hide_console():
+    if sys.platform == "win32":
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+
+def show_console():
+    if sys.platform == "win32":
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 1)
+
+class SimpleCipher:
+    @staticmethod
+    def encrypt(text):
+        text = text.encode()
+        xor_bytes = [text[i] ^ ENCRYPTION_KEY[i % len(ENCRYPTION_KEY)] for i in range(len(text))]
+        return base64.b64encode(bytes(xor_bytes)).decode()
+
+    @staticmethod
+    def decrypt(encrypted):
+        xor_bytes = base64.b64decode(encrypted.encode())
+        return bytes([xor_bytes[i] ^ ENCRYPTION_KEY[i % len(ENCRYPTION_KEY)] for i in range(len(xor_bytes))]).decode()
+
+class PasswordManager:
+    def __init__(self):
+        self.config_folder = "ConfigEngine"
+        self.password_folder = os.path.join(self.config_folder, "PasswordVault")
+        self.ensure_folders_exist()
+        
+        self.normal_pw_file = os.path.join(self.password_folder, "normal_passwords.enc")
+        self.admin_pw_file = os.path.join(self.password_folder, "admin_passwords.enc")
+        self.ensure_password_files()
+        self.unlocked = False
+        self.temp_password = None
+
+    def ensure_folders_exist(self):
+        os.makedirs(self.password_folder, exist_ok=True)
+
+    def ensure_password_files(self):
+        if not os.path.exists(self.normal_pw_file):
+            with open(self.normal_pw_file, "w") as f:
+                f.write(SimpleCipher.encrypt("111111") + "\n")
+        
+        if not os.path.exists(self.admin_pw_file):
+            with open(self.admin_pw_file, "w") as f:
+                f.write(SimpleCipher.encrypt("admin123") + "\n")
+
+    def check_password(self, password):
+        try:
+            with open(self.admin_pw_file, "r+") as f:
+                lines = [line.strip() for line in f]
+                f.seek(0)
+                f.truncate()
+                for line in lines:
+                    if SimpleCipher.encrypt(password) == line:
+                        f.writelines([l + "\n" for l in lines if l != line])
+                        return 2
+                    else:
+                        f.write(line + "\n")
+            
+            with open(self.normal_pw_file, "r+") as f:
+                lines = [line.strip() for line in f]
+                f.seek(0)
+                f.truncate()
+                for line in lines:
+                    if SimpleCipher.encrypt(password) == line:
+                        f.writelines([l + "\n" for l in lines if l != line])
+                        self.unlocked = True
+                        return 1
+                    else:
+                        f.write(line + "\n")
+            
+            return 0
+        except Exception:
+            return 0
+
+    def is_unlock_valid(self):
+        return self.unlocked
+
+    def import_passwords(self, filepath, is_admin=False):
+        try:
+            target_file = self.admin_pw_file if is_admin else self.normal_pw_file
+            with open(filepath, "r") as src, open(target_file, "a") as dst:
+                for line in src:
+                    line = line.strip()
+                    if line:
+                        dst.write(SimpleCipher.encrypt(line) + "\n")
+            return True
+        except Exception:
+            return False
+
+    def set_temp_password(self, password):
+        self.temp_password = password
+
+    def clear_temp_password(self):
+        self.temp_password = None
+
+    def verify_temp_password(self):
+        if self.temp_password is None:
+            return False
+        return self.check_password(self.temp_password) == 1
+
+class RateManager:
+    def __init__(self):
+        self.config_folder = "ConfigEngine"
+        self.rate_folder = os.path.join(self.config_folder, "RateSettings")
+        self.ensure_folders_exist()
+
+    def ensure_folders_exist(self):
+        os.makedirs(self.rate_folder, exist_ok=True)
+
+    def set_rate(self, mode, number, rate):
+        try:
+            rate_file = os.path.join(self.rate_folder, f"{number}.rate")
+            data = {
+                "mode": mode,
+                "number": number,
+                "rate": max(1, int(rate)),
+                "count": 0,
+                "last_draw": None
+            }
+            with open(rate_file, "wb") as f:
+                pickle.dump(data, f)
+            return True
+        except Exception:
+            return False
+
+    def check_rate(self, mode, available_numbers, gender_numbers=None):
+        adjusted_numbers = list(available_numbers)
+        rate_files = [f for f in os.listdir(self.rate_folder) if f.endswith(".rate")]
+        
+        for filename in rate_files:
+            try:
+                with open(os.path.join(self.rate_folder, filename), "rb") as f:
+                    data = pickle.load(f)
+                    if data["mode"] == mode and data["number"] in adjusted_numbers:
+                        if gender_numbers is not None and data["number"] not in gender_numbers:
+                            continue
+                            
+                        data["count"] += 1
+                        if data["count"] >= data["rate"]:
+                            data["count"] = 0
+                            data["last_draw"] = datetime.now()
+                            with open(os.path.join(self.rate_folder, filename), "wb") as f:
+                                pickle.dump(data, f)
+                            return [data["number"]]
+                        else:
+                            if data["number"] in adjusted_numbers:
+                                adjusted_numbers.remove(data["number"])
+                            with open(os.path.join(self.rate_folder, filename), "wb") as f:
+                                pickle.dump(data, f)
+            except Exception:
+                continue
+        
+        return adjusted_numbers
+
+    def get_rate_settings(self):
+        settings = defaultdict(list)
+        for filename in os.listdir(self.rate_folder):
+            if filename.endswith(".rate"):
+                try:
+                    with open(os.path.join(self.rate_folder, filename), "rb") as f:
+                        data = pickle.load(f)
+                        settings[data["mode"]].append(
+                            (data["number"], data["rate"], 
+                             data["count"], data.get("last_draw")))
+                except Exception:
+                    continue
+        return settings
+
+    def clear_rate_settings(self, mode=None):
+        try:
+            if mode:
+                for filename in os.listdir(self.rate_folder):
+                    if filename.endswith(".rate"):
+                        filepath = os.path.join(self.rate_folder, filename)
+                        with open(filepath, "rb") as f:
+                            data = pickle.load(f)
+                            if data["mode"] == mode:
+                                os.remove(filepath)
+            else:
+                for filename in os.listdir(self.rate_folder):
+                    if filename.endswith(".rate"):
+                        os.remove(os.path.join(self.rate_folder, filename))
+            return True
+        except Exception:
+            return False
+
+class RecordManager:
+    def __init__(self):
+        self.config_folder = "ConfigEngine"
+        self.record_folder = os.path.join(self.config_folder, "LotteryRecords")
+        self.modes = ["英语背书", "英语听写", "心理", "班务", "模式5"]
+        self.genders = ["boy", "girl"]
+        self.ensure_folders_exist()
+        self.used_numbers_cache = {mode: set() for mode in self.modes}
+        self.gender_numbers_cache = {gender: set() for gender in self.genders}
+        self.load_all_records()
+
+    def load_all_records(self):
+        for mode in self.modes:
+            self.used_numbers_cache[mode] = self.get_used_numbers(mode)
+        for gender in self.genders:
+            self.gender_numbers_cache[gender] = self.get_gender_numbers(gender)
+
+    def ensure_folders_exist(self):
+        os.makedirs(self.record_folder, exist_ok=True)
+        for mode in self.modes:
+            mode_file = os.path.join(self.record_folder, f"{mode}.txt")
+            if not os.path.exists(mode_file):
+                with open(mode_file, "w") as f:
+                    pass
+        for gender in self.genders:
+            gender_file = os.path.join(self.record_folder, f"{gender}.txt")
+            if not os.path.exists(gender_file):
+                with open(gender_file, "w") as f:
+                    pass
+
+    def get_record_file(self, mode):
+        return os.path.join(self.record_folder, f"{mode}.txt")
+
+    def get_used_numbers(self, mode):
+        try:
+            with open(self.get_record_file(mode), "r") as f:
+                return set(
+                    int(SimpleCipher.decrypt(line.strip()))
+                    for line in f if line.strip()
+                )
+        except Exception:
+            return set()
+
+    def get_gender_numbers(self, gender):
+        gender_file = os.path.join(self.record_folder, f"{gender}.txt")
+        try:
+            with open(gender_file, "r") as f:
+                return set(int(line.strip()) for line in f if line.strip())
+        except Exception:
+            return set()
+
+    def add_record(self, mode, numbers):
+        try:
+            encrypted_lines = [SimpleCipher.encrypt(str(num)) for num in numbers]
+            with open(self.get_record_file(mode), "a") as f:
+                f.write("\n".join(encrypted_lines) + "\n")
+            self.used_numbers_cache[mode].update(numbers)
+            return True
+        except Exception as e:
+            print(f"记录添加失败: {str(e)}")
+            return False
+
+    def import_history(self, mode, filepath):
+        try:
+            imported = set()
+            with open(filepath, "r") as f:
+                for line in f:
+                    num = line.strip()
+                    if num.isdigit():
+                        imported.add(int(num))
+            
+            if not imported:
+                return False
+                
+            encrypted_lines = [SimpleCipher.encrypt(str(num)) for num in imported]
+            with open(self.get_record_file(mode), "a") as f:
+                f.write("\n".join(encrypted_lines) + "\n")
+            
+            self.used_numbers_cache[mode].update(imported)
+            return True
+        except Exception as e:
+            print(f"导入历史记录失败: {str(e)}")
+            return False
+
+    def reset_records(self, mode=None):
+        try:
+            if mode:
+                with open(self.get_record_file(mode), "w") as f:
+                    pass
+                self.used_numbers_cache[mode] = set()
+            else:
+                for m in self.modes:
+                    with open(self.get_record_file(m), "w") as f:
+                        pass
+                    self.used_numbers_cache[m] = set()
+            return True
+        except Exception:
+            return False
+
+class TimeValidator:
+    def __init__(self, record_folder):
+        self.time_record = os.path.join(record_folder, ".timechk")
+        self.initial_time = datetime.now()
+        self.last_check = self.initial_time
+        self.load_time_anchor()
+
+    def create_hash(self, data):
+        return hashlib.sha256(pickle.dumps(data)).hexdigest()
+
+    def save_time_anchor(self):
+        time_data = {
+            "init": self.initial_time,
+            "last": datetime.now(),
+            "hash": self.create_hash((self.initial_time, datetime.now()))
+        }
+        with open(self.time_record, "wb") as f:
+            pickle.dump(time_data, f)
+
+    def load_time_anchor(self):
+        if not os.path.exists(self.time_record):
+            self.save_time_anchor()
+            return
+        
+        try:
+            with open(self.time_record, "rb") as f:
+                data = pickle.load(f)
+                
+            current_hash = self.create_hash((data["init"], data["last"]))
+            if data["hash"] != current_hash or \
+               data["last"] > datetime.now() or \
+               data["init"] > datetime.now():
+                self.handle_tampering()
+                return
+                
+            self.initial_time = data["init"]
+            self.last_check = data["last"]
+        except:
+            self.handle_tampering()
+
+    def handle_tampering(self):
+        messagebox.showerror("安全警告", "系统时间异常，功能已锁定！")
+        sys.exit(1)
+
+    def periodic_check(self):
+        now = datetime.now()
+        if now < self.last_check - timedelta(seconds=30):
+            self.handle_tampering()
+        self.last_check = now
+        self.save_time_anchor()
+
+class TimeRestriction:
+    def __init__(self):
+        self.config_folder = "ConfigEngine"
+        self.time_folder = os.path.join(self.config_folder, "TimeRestrictions")
+        self.time_file = os.path.join(self.time_folder, "time_ranges.enc")
+        self.ensure_folders_exist()
+        
+        self.default_ranges = [
+            (6, 0, 7, 25), (8, 25, 8, 35),
+            (9, 20, 9, 40), (10, 20, 10, 30),
+            (11, 10, 11, 20), (12, 0, 14, 20),
+            (15, 0, 16, 15), (16, 50, 17, 5),
+            (17, 35, 18, 0)
+        ]
+        self.load_or_create_time_restriction()
+
+    def ensure_folders_exist(self):
+        os.makedirs(self.time_folder, exist_ok=True)
+
+    def load_or_create_time_restriction(self):
+        if not os.path.exists(self.time_file):
+            self.save_time_ranges(self.default_ranges)
+        else:
+            try:
+                with open(self.time_file, "r") as f:
+                    encrypted = f.read()
+                    decrypted = SimpleCipher.decrypt(encrypted)
+                    ranges = []
+                    for line in decrypted.splitlines():
+                        if line.strip():
+                            parts = line.strip().split()
+                            if len(parts) == 4:
+                                ranges.append(tuple(map(int, parts)))
+                    self.time_ranges = ranges
+            except:
+                self.save_time_ranges(self.default_ranges)
+
+    def save_time_ranges(self, ranges):
+        lines = []
+        for r in ranges:
+            lines.append(f"{r[0]} {r[1]} {r[2]} {r[3]}")
+        content = "\n".join(lines)
+        encrypted = SimpleCipher.encrypt(content)
+        with open(self.time_file, "w") as f:
+            f.write(encrypted)
+        self.time_ranges = ranges
+
+    def is_time_allowed(self):
+        now = datetime.now().time()
+        for r in self.time_ranges:
+            start_time = time(hour=r[0], minute=r[1])
+            end_time = time(hour=r[2], minute=r[3])
+            if start_time <= end_time:
+                if start_time <= now <= end_time:
+                    return False
+            else:
+                if now >= start_time or now <= end_time:
+                    return False
+        return True
+
+    def get_time_ranges(self):
+        return self.time_ranges
+
+    def set_time_ranges(self, ranges):
+        self.save_time_ranges(ranges)
+
+class ImportDataPanel(tk.Toplevel):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.title("数据导入工具")
+        self.geometry("500x350")
+        self.resizable(False, False)
+        
+        self.style = ttk.Style()
+        self.style.configure("TFrame", background="#f0f0f0")
+        self.style.configure("TLabel", background="#f0f0f0", font=("微软雅黑", 10))
+        self.style.configure("TButton", font=("微软雅黑", 10))
+        
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        mode_frame = ttk.LabelFrame(main_frame, text="选择导入模式", padding=10)
+        mode_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(mode_frame, text="目标模式:").pack(side=tk.LEFT, padx=5)
+        self.mode_var = tk.StringVar()
+        mode_menu = ttk.Combobox(mode_frame, textvariable=self.mode_var, 
+                               values=self.app.modes, state="readonly", width=15)
+        mode_menu.pack(side=tk.LEFT, padx=5)
+        mode_menu.current(0)
+        
+        drop_frame = ttk.LabelFrame(main_frame, text="拖放文件区域", padding=10)
+        drop_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.drop_label = tk.Label(drop_frame, text="将TXT文件拖放到此区域\n\n(文件内容应为每行一个数字)", 
+                                 relief="groove", bg="white", height=8, 
+                                 font=("微软雅黑", 10), padx=20, pady=20)
+        self.drop_label.pack(fill=tk.BOTH, expand=True)
+        
+        self.drop_label.bind("<DragEnter>", self.on_drag_enter)
+        self.drop_label.bind("<DragLeave>", self.on_drag_leave)
+        self.drop_label.bind("<Drop>", self.on_drop)
+        
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(pady=10)
+        
+        ttk.Button(btn_frame, text="关闭", command=self.on_close).pack(side=tk.RIGHT, padx=5)
+        
+        self.status_var = tk.StringVar()
+        self.status_var.set("等待文件拖入...")
+        ttk.Label(main_frame, textvariable=self.status_var, foreground="blue").pack()
+    
+    def on_drag_enter(self, event):
+        self.drop_label.config(bg="#e6f3ff")
+        self.status_var.set("释放鼠标导入文件...")
+    
+    def on_drag_leave(self, event):
+        self.drop_label.config(bg="white")
+        self.status_var.set("等待文件拖入...")
+    
+    def on_drop(self, event):
+        self.drop_label.config(bg="white")
+        filepath = event.data.strip("{}")
+        
+        if not filepath.lower().endswith(".txt"):
+            self.status_var.set("错误: 只支持TXT文件")
+            messagebox.showerror("错误", "只支持TXT格式的文件")
+            return
+        
+        if not self.mode_var.get():
+            self.status_var.set("错误: 请先选择模式")
+            messagebox.showerror("错误", "请先选择导入模式")
+            return
+        
+        try:
+            self.status_var.set("正在导入数据...")
+            self.update()
+            
+            success = self.app.record_manager.import_history(self.mode_var.get(), filepath)
+            
+            if success:
+                self.status_var.set("导入成功!")
+                messagebox.showinfo("成功", f"数据已成功导入到【{self.mode_var.get()}】模式")
+                self.on_close()
+            else:
+                self.status_var.set("导入失败")
+                messagebox.showerror("错误", "数据导入失败，请检查文件格式")
+                
+        except Exception as e:
+            self.status_var.set(f"错误: {str(e)}")
+            messagebox.showerror("错误", f"导入过程中发生错误: {str(e)}")
+    
+    def on_close(self):
+        self.app.password_manager.clear_temp_password()
+        self.destroy()
+
+class AdminPanel:
+    def __init__(self, root, app):
+        self.top = tk.Toplevel(root)
+        self.app = app
+        self.top.title("管理员面板")
+        self.top.geometry("600x600")
+        self.top.resizable(False, False)
+        
+        style = ttk.Style()
+        style.configure("TFrame", background="#f0f0f0")
+        style.configure("TLabelFrame", background="#f0f0f0", font=("微软雅黑", 10))
+        style.configure("TButton", font=("微软雅黑", 10), padding=5)
+        style.configure("TLabel", background="#f0f0f0", font=("微软雅黑", 10))
+        style.configure("TEntry", font=("微软雅黑", 10))
+        style.configure("TCombobox", font=("微软雅黑", 10))
+        
+        main_frame = ttk.Frame(self.top, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        notebook = ttk.Notebook(main_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        
+        rate_frame = ttk.Frame(notebook)
+        notebook.add(rate_frame, text="管理设置")
+        
+        rate_setting_frame = ttk.LabelFrame(rate_frame, text="爆率设置", padding=10)
+        rate_setting_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(rate_setting_frame, text="模式:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        self.mode_var = tk.StringVar()
+        mode_menu = ttk.Combobox(rate_setting_frame, textvariable=self.mode_var, 
+                                values=self.app.modes, state="readonly", width=15)
+        mode_menu.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+        mode_menu.current(0)
+        
+        ttk.Label(rate_setting_frame, text="学号:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+        self.number_entry = ttk.Entry(rate_setting_frame, width=15)
+        self.number_entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(rate_setting_frame, text="爆率(抽中频率):").grid(row=2, column=0, sticky="e", padx=5, pady=5)
+        self.rate_entry = ttk.Entry(rate_setting_frame, width=15)
+        self.rate_entry.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        self.rate_entry.insert(0, "5")
+        
+        btn_frame = ttk.Frame(rate_setting_frame)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
+        
+        ttk.Button(btn_frame, text="设置爆率", command=self.set_rate, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="清除模式设置", command=self.clear_mode_rates, width=15).pack(side=tk.LEFT, padx=5)
+        
+        pw_frame = ttk.Frame(notebook)
+        notebook.add(pw_frame, text="密码管理")
+        
+        pw_setting_frame = ttk.LabelFrame(pw_frame, text="密码设置", padding=10)
+        pw_setting_frame.pack(fill=tk.BOTH, padx=5, pady=5, expand=True)
+        
+        ttk.Button(pw_setting_frame, text="设置普通用户密码", 
+                 command=self.set_normal_password).pack(fill=tk.X, pady=5, padx=20)
+        ttk.Button(pw_setting_frame, text="设置管理员密码", 
+                 command=self.set_admin_password).pack(fill=tk.X, pady=5, padx=20)
+        ttk.Button(pw_setting_frame, text="导入普通密码", 
+                 command=lambda: self.import_passwords(False)).pack(fill=tk.X, pady=5, padx=20)
+        ttk.Button(pw_setting_frame, text="导入管理员密码", 
+                 command=lambda: self.import_passwords(True)).pack(fill=tk.X, pady=5, padx=20)
+        
+        time_frame = ttk.Frame(notebook)
+        notebook.add(time_frame, text="时间管理")
+        
+        time_setting_frame = ttk.LabelFrame(time_frame, text="禁止时间段设置", padding=10)
+        time_setting_frame.pack(fill=tk.BOTH, padx=5, pady=5, expand=True)
+        
+        self.time_text = tk.Text(time_setting_frame, height=10, width=40, font=("微软雅黑", 10))
+        self.time_text.pack(pady=5, padx=5, fill=tk.BOTH, expand=True)
+        self.update_time_display()
+        
+        btn_frame = ttk.Frame(time_setting_frame)
+        btn_frame.pack(pady=5)
+        
+        ttk.Button(btn_frame, text="添加时间段", command=self.add_time_range, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="删除时间段", command=self.remove_time_range, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="重置为默认", command=self.reset_to_default, width=15).pack(side=tk.LEFT, padx=5)
+        
+        record_frame = ttk.Frame(notebook)
+        notebook.add(record_frame, text="记录管理")
+        
+        record_setting_frame = ttk.LabelFrame(record_frame, text="记录管理", padding=10)
+        record_setting_frame.pack(fill=tk.BOTH, padx=5, pady=5, expand=True)
+        
+        ttk.Button(record_setting_frame, text="查看爆率设置", 
+                  command=self.show_rate_settings).pack(fill=tk.X, pady=5, padx=20)
+        ttk.Button(record_setting_frame, text="重置所有记录", 
+                  command=self.reset_all_records).pack(fill=tk.X, pady=5, padx=20)
+        ttk.Button(record_setting_frame, text="清除所有爆率", 
+                  command=self.clear_all_rates).pack(fill=tk.X, pady=5, padx=20)
+       
+        ttk.Button(main_frame, text="返回", command=self.top.destroy).pack(pady=10)
+
+    def set_normal_password(self):
+        password = simpledialog.askstring("设置普通用户密码", "请输入新的普通用户密码:", show="*")
+        if password:
+            with open(self.app.password_manager.normal_pw_file, "w") as f:
+                f.write(SimpleCipher.encrypt(password) + "\n")
+            messagebox.showinfo("成功", "普通用户密码已更新！")
+
+    def set_admin_password(self):
+        password = simpledialog.askstring("设置管理员密码", "请输入新的管理员密码:", show="*")
+        if password:
+            with open(self.app.password_manager.admin_pw_file, "w") as f:
+                f.write(SimpleCipher.encrypt(password) + "\n")
+            messagebox.showinfo("成功", "管理员密码已更新！")
+
+    def set_rate(self):
+        try:
+            mode = self.mode_var.get()
+            number = int(self.number_entry.get())
+            rate = int(self.rate_entry.get())
+            
+            if not mode or number <= 0 or rate <= 0:
+                messagebox.showerror("错误", "请输入有效的模式、学号和爆率")
+                return
+                
+            if self.app.rate_manager.set_rate(mode, number, rate):
+                messagebox.showinfo("成功", "爆率设置成功！")
+            else:
+                messagebox.showerror("错误", "爆率设置失败")
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的数字")
+
+    def clear_mode_rates(self):
+        mode = self.mode_var.get()
+        if mode and messagebox.askyesno("确认", f"确定要清除【{mode}】模式的所有爆率设置吗？"):
+            if self.app.rate_manager.clear_rate_settings(mode):
+                messagebox.showinfo("成功", f"已清除【{mode}】模式的所有爆率设置")
+            else:
+                messagebox.showerror("错误", "清除失败")
+
+    def clear_all_rates(self):
+        if messagebox.askyesno("确认", "确定要清除所有爆率设置吗？"):
+            if self.app.rate_manager.clear_rate_settings():
+                messagebox.showinfo("成功", "已清除所有爆率设置")
+            else:
+                messagebox.showerror("错误", "清除失败")
+
+    def show_rate_settings(self):
+        rate_settings = self.app.rate_manager.get_rate_settings()
+        if not rate_settings:
+            messagebox.showinfo("爆率设置", "当前没有设置任何爆率规则")
+            return
+        
+        top = tk.Toplevel(self.top)
+        top.title("爆率设置记录")
+        top.geometry("600x400")
+        
+        frame = ttk.Frame(top)
+        frame.pack(fill="both", expand=True)
+        
+        tree = ttk.Treeview(frame, columns=("number", "rate", "count", "last"), show="headings")
+        tree.heading("number", text="学号")
+        tree.heading("rate", text="爆率(每N次)")
+        tree.heading("count", text="当前计数")
+        tree.heading("last", text="上次抽中时间")
+        
+        tree.column("number", width=80, anchor="center")
+        tree.column("rate", width=100, anchor="center")
+        tree.column("count", width=80, anchor="center")
+        tree.column("last", width=180, anchor="center")
+        
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        
+        for mode, rules in rate_settings.items():
+            parent = tree.insert("", "end", text=f"模式: {mode}", open=True)
+            for number, rate, count, last_draw in sorted(rules, key=lambda x: x[0]):
+                last_time = last_draw.strftime("%Y-%m-%d %H:%M:%S") if last_draw else "从未"
+                tree.insert(parent, "end", values=(number, rate, count, last_time))
+        
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Button(btn_frame, text="关闭", command=top.destroy).pack(side="right")
+
+    def import_passwords(self, is_admin):
+        filepath = filedialog.askopenfilename(title="选择密码文件", 
+                                            filetypes=[("文本文件", "*.txt")])
+        if filepath:
+            if self.app.password_manager.import_passwords(filepath, is_admin):
+                messagebox.showinfo("成功", "密码导入成功！")
+            else:
+                messagebox.showerror("错误", "密码导入失败")
+
+    def reset_all_records(self):
+        if messagebox.askyesno("确认", "确定要重置所有抽号记录吗？"):
+            if self.app.record_manager.reset_records():
+                messagebox.showinfo("成功", "所有记录已重置")
+            else:
+                messagebox.showerror("错误", "重置记录失败")
+
+    def update_time_display(self):
+        self.time_text.delete(1.0, tk.END)
+        ranges = self.app.time_restriction.get_time_ranges()
+        for i, r in enumerate(ranges):
+            self.time_text.insert(tk.END, f"{i+1}. {r[0]:02d}:{r[1]:02d} - {r[2]:02d}:{r[3]:02d}\n")
+
+    def add_time_range(self):
+        try:
+            start_h = simpledialog.askinteger("输入", "请输入开始小时 (0-23):", minvalue=0, maxvalue=23)
+            if start_h is None: return
+            start_m = simpledialog.askinteger("输入", "请输入开始分钟 (0-59):", minvalue=0, maxvalue=59)
+            if start_m is None: return
+            end_h = simpledialog.askinteger("输入", "请输入结束小时 (0-23):", minvalue=0, maxvalue=23)
+            if end_h is None: return
+            end_m = simpledialog.askinteger("输入", "请输入结束分钟 (0-59):", minvalue=0, maxvalue=59)
+            if end_m is None: return
+            
+            ranges = self.app.time_restriction.get_time_ranges()
+            ranges.append((start_h, start_m, end_h, end_m))
+            self.app.time_restriction.set_time_ranges(ranges)
+            self.update_time_display()
+        except:
+            messagebox.showerror("错误", "无效输入")
+
+    def remove_time_range(self):
+        try:
+            index = simpledialog.askinteger("输入", "请输入要删除的时间段编号:", minvalue=1)
+            if index is None: return
+            
+            ranges = self.app.time_restriction.get_time_ranges()
+            if 1 <= index <= len(ranges):
+                ranges.pop(index-1)
+                self.app.time_restriction.set_time_ranges(ranges)
+                self.update_time_display()
+            else:
+                messagebox.showerror("错误", "无效编号")
+        except:
+            messagebox.showerror("错误", "无效输入")
+
+    def reset_to_default(self):
+        if messagebox.askyesno("确认", "确定要重置为默认禁止时间段吗？"):
+            self.app.time_restriction.set_time_ranges(self.app.time_restriction.default_ranges)
+            self.update_time_display()
+
+class LotteryApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("智能抽号系统")
+        
+        self.password_manager = PasswordManager()
+        self.record_manager = RecordManager()
+        self.rate_manager = RateManager()
+        self.time_validator = TimeValidator(self.record_manager.record_folder)
+        self.time_restriction = TimeRestriction()
+        
+        self.modes = self.record_manager.modes
+        self.genders = self.record_manager.genders
+        
+        self.base_width = 600
+        self.base_height = 400
+        self.root.geometry(f"{self.base_width}x{self.base_height}")
+        self.root.minsize(self.base_width, self.base_height)
+        
+        self.blinking = False
+        self.numbers_to_show = []
+        self.current_number_index = 0
+        self.selected_mode = None
+        self.selected_gender = None
+        self.admin_mode = False
+        
+        self.base_size = 16
+        self.result_base_size = 120
+        self.base_font = font.Font(family="黑体", size=self.base_size)
+        self.result_font = font.Font(family="黑体", size=self.result_base_size)
+        
+        self.create_unlock_interface()
+        self.create_normal_interface()
+        self.create_admin_interface()
+        
+        if self.time_restriction.is_time_allowed() or self.password_manager.is_unlock_valid():
+            self.enter_normal_mode()
+        else:
+            self.unlock_frame.pack(pady=50)
+        
+        self.root.after(1000, self.periodic_check)
+
+    def create_unlock_interface(self):
+        self.unlock_frame = ttk.Frame(self.root, padding=20)
+        
+        title_label = ttk.Label(self.unlock_frame, text="智能抽号系统", 
+                              font=("黑体", 20, "bold"))
+        title_label.pack(pady=20)
+        
+        pw_frame = ttk.Frame(self.unlock_frame)
+        pw_frame.pack(pady=10)
+        
+        ttk.Label(pw_frame, text="请输入密码：", 
+                font=self.base_font).pack(side=tk.LEFT, padx=5)
+        
+        self.pw_entry = ttk.Entry(pw_frame, width=20, font=self.base_font, show="*")
+        self.pw_entry.pack(side=tk.LEFT, padx=5)
+        
+        self.pw_btn = ttk.Button(pw_frame, text="解锁", command=self.check_password)
+        self.pw_btn.pack(side=tk.LEFT, padx=5)
+
+    def create_normal_interface(self):
+        self.normal_frame = ttk.Frame(self.root)
+        
+        self.mode_frame = ttk.Frame(self.normal_frame)
+        self.mode_dots = {}
+        
+        ttk.Label(self.mode_frame, text="选择模式：", 
+                 font=self.base_font).pack(side=tk.LEFT)
+        
+        for mode in self.modes:
+            dot = tk.Label(self.mode_frame, text="○", font=("Arial", 14), 
+                          cursor="hand2")
+            dot.pack(side=tk.LEFT, padx=8)
+            dot.bind("<Button-1>", lambda e, m=mode: self.toggle_mode(m))
+            self.mode_dots[mode] = dot
+            ttk.Label(self.mode_frame, text=mode, font=("黑体", 10)).pack(side=tk.LEFT)
+        
+        self.mode_frame.pack(side=tk.TOP, pady=5)
+
+        control_frame = ttk.Frame(self.normal_frame)
+        
+        ttk.Label(control_frame, text="最大号码：", 
+                font=self.base_font).grid(row=0, column=0, padx=5)
+        self.max_num_entry = ttk.Entry(control_frame, font=self.base_font, width=8)
+        self.max_num_entry.grid(row=0, column=1, padx=5)
+        self.max_num_entry.insert(0, "50")
+        
+        ttk.Label(control_frame, text="抽号数量：", 
+                font=self.base_font).grid(row=0, column=2, padx=5)
+        self.quantity_entry = ttk.Entry(control_frame, font=self.base_font, width=5)
+        self.quantity_entry.grid(row=0, column=3, padx=5)
+        self.quantity_entry.insert(0, "1")
+        
+        self.gender_dots = {}
+        gender_frame = ttk.Frame(control_frame)
+        self.gender_dots["boy"] = tk.Label(gender_frame, text="○", fg="blue", 
+                                         font=("Arial", 14), cursor="hand2")
+        self.gender_dots["boy"].pack(side=tk.LEFT)
+        self.gender_dots["boy"].bind("<Button-1>", lambda e: self.toggle_gender("boy"))
+        ttk.Label(gender_frame, text="男生", font=("黑体", 10)).pack(side=tk.LEFT, padx=2)
+        
+        self.gender_dots["girl"] = tk.Label(gender_frame, text="○", fg="red", 
+                                          font=("Arial", 14), cursor="hand2")
+        self.gender_dots["girl"].pack(side=tk.LEFT)
+        self.gender_dots["girl"].bind("<Button-1>", lambda e: self.toggle_gender("girl"))
+        ttk.Label(gender_frame, text="女生", font=("黑体", 10)).pack(side=tk.LEFT, padx=2)
+        gender_frame.grid(row=0, column=4, padx=10)
+        
+        control_frame.pack(side=tk.TOP, pady=10)
+
+        self.btn = ttk.Button(self.normal_frame, text="开始抽号", command=self.start_lottery)
+        self.btn.pack(pady=15)
+
+        result_frame = ttk.Frame(self.normal_frame)
+        self.result = ttk.Label(result_frame, text="", font=self.result_font,
+                              anchor="center", justify="center", 
+                              relief="ridge", borderwidth=3)
+        self.result.pack(expand=True, fill=tk.BOTH)
+        result_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=10)
+
+        status_frame = ttk.Frame(self.normal_frame)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        self.dev_dot = tk.Label(status_frame, text="•", font=("Arial", 20), 
+                               fg="red", cursor="hand2")
+        self.dev_dot.pack(side=tk.RIGHT, padx=10)
+        self.dev_dot.bind("<Button-1>", self.show_dev_info)
+        
+        self.status_label = ttk.Label(status_frame, text="普通模式")
+        self.status_label.pack(side=tk.LEFT)
+
+    def create_admin_interface(self):
+        self.admin_frame = ttk.Frame(self.root)
+        
+        btn_frame = ttk.Frame(self.admin_frame)
+        ttk.Button(btn_frame, text="爆率调整", command=self.show_admin_panel).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="返回", command=self.return_to_unlock).pack(side=tk.LEFT, padx=5)
+        btn_frame.pack(pady=10)
+        
+        status_frame = ttk.Frame(self.admin_frame)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.admin_status = ttk.Label(status_frame, text="管理员模式", 
+                                    foreground="red")
+        self.admin_status.pack(side=tk.LEFT)
+
+    def check_password(self):
+        password = self.pw_entry.get()
+        result = self.password_manager.check_password(password)
+        
+        if result == 1:
+            self.enter_normal_mode()
+        elif result == 2:
+            self.enter_admin_mode()
+        else:
+            if self.time_restriction.is_time_allowed():
+                self.enter_normal_mode()
+            else:
+                messagebox.showerror("错误", "无效密码！")
+        
+        self.pw_entry.delete(0, tk.END)
+
+    def check_time_restriction(self):
+        if self.admin_mode:
+            return True
+        return self.password_manager.is_unlock_valid() or self.time_restriction.is_time_allowed()
+
+    def periodic_check(self):
+        try:
+            self.time_validator.periodic_check()
+            
+            if not self.admin_mode:
+                current_allowed = self.time_restriction.is_time_allowed()
+                
+                if (self.normal_frame.winfo_ismapped() and 
+                    not current_allowed and 
+                    not self.password_manager.is_unlock_valid()):
+                    self.return_to_unlock()
+                
+                elif (self.unlock_frame.winfo_ismapped() and 
+                      (current_allowed or self.password_manager.is_unlock_valid())):
+                    self.enter_normal_mode()
+                    
+        finally:
+            self.root.after(1000, self.periodic_check)
+
+    def enter_normal_mode(self):
+        self.admin_mode = False
+        self.unlock_frame.pack_forget()
+        self.admin_frame.pack_forget()
+        self.normal_frame.pack(expand=True, fill=tk.BOTH)
+        self.update_button_state()
+
+    def enter_admin_mode(self):
+        self.admin_mode = True
+        self.unlock_frame.pack_forget()
+        self.normal_frame.pack_forget()
+        self.admin_frame.pack(expand=True, fill=tk.BOTH)
+
+    def return_to_unlock(self):
+        self.admin_mode = False
+        self.normal_frame.pack_forget()
+        self.admin_frame.pack_forget()
+        self.unlock_frame.pack(pady=50)
+
+    def toggle_mode(self, mode):
+        if not self.check_time_restriction():
+            return
+            
+        if self.selected_mode == mode:
+            self.mode_dots[mode].config(text="○")
+            self.selected_mode = None
+        else:
+            if self.selected_mode:
+                self.mode_dots[self.selected_mode].config(text="○")
+            self.mode_dots[mode].config(text="●")
+            self.selected_mode = mode
+        self.update_button_state()
+
+    def toggle_gender(self, gender):
+        if not self.check_time_restriction():
+            return
+            
+        if self.selected_gender == gender:
+            self.gender_dots[gender].config(text="○")
+            self.selected_gender = None
+        else:
+            if self.selected_gender:
+                self.gender_dots[self.selected_gender].config(text="○")
+            self.gender_dots[gender].config(text="●")
+            self.selected_gender = gender
+        self.update_button_state()
+
+    def update_button_state(self):
+        try:
+            valid_max = self.max_num_entry.get().isdigit() and 1 <= int(self.max_num_entry.get()) <= 100
+            valid_quantity = self.quantity_entry.get().isdigit() and 1 <= int(self.quantity_entry.get()) <= 5
+            ready = all([
+                valid_max,
+                valid_quantity,
+                self.selected_mode is not None,
+                not self.blinking,
+                self.check_time_restriction()
+            ])
+            
+            self.btn.state(['!disabled' if ready else 'disabled'])
+        except:
+            self.btn.state(['disabled'])
+
+    def start_lottery(self):
+        if not self.check_time_restriction():
+            return
+            
+        if not self.selected_mode:
+            return
+        
+        try:
+            max_num = int(self.max_num_entry.get())
+            quantity = int(self.quantity_entry.get())
+            if not (1 <= max_num <= 100) or not (1 <= quantity <=5):
+                return
+        except:
+            return
+        
+        used_numbers = self.record_manager.used_numbers_cache[self.selected_mode]
+        gender_numbers = None
+        if self.selected_gender:
+            gender_numbers = self.record_manager.gender_numbers_cache[self.selected_gender]
+        
+        available = set(range(1, max_num+1)) - used_numbers
+        if gender_numbers:
+            available = available & gender_numbers
+        
+        if len(available) == 0:
+            if messagebox.askyesno("提示", f"所有号码已抽完，是否重置[{self.selected_mode}]记录？"):
+                if self.record_manager.reset_records(self.selected_mode):
+                    available = set(range(1, max_num+1))
+                    if gender_numbers:
+                        available &= gender_numbers
+                else:
+                    return
+        
+        self.numbers_to_show = []
+        remaining = min(quantity, len(available))
+        temp_available = list(available)
+        
+        for _ in range(remaining):
+            if not temp_available:
+                break
+                
+            adjusted = self.rate_manager.check_rate(
+                self.selected_mode, 
+                temp_available,
+                gender_numbers
+            )
+            
+            if not adjusted:
+                break
+                
+            selected = random.choice(adjusted)
+            self.numbers_to_show.append(selected)
+            temp_available.remove(selected)
+        
+        if self.numbers_to_show:
+            self.record_manager.add_record(self.selected_mode, self.numbers_to_show)
+        
+        self.current_number_index = 0
+        self.btn.state(['disabled'])
+        if quantity == 1:
+            self.run_single_animation(max_num)
+        else:
+            self.run_multi_animation()
+
+    def run_single_animation(self, max_num):
+        self.blinking = True
+        start_time = datetime.now()
+        self.animate_number(max_num, start_time)
+
+    def animate_number(self, max_num, start_time):
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 2.0:
+            self.result.config(text=str(random.randint(1, max_num)))
+            self.root.after(100, lambda: self.animate_number(max_num, start_time))
+        else:
+            self.result.config(text=str(self.numbers_to_show[0]))
+            self.blinking = False
+            self.update_button_state()
+
+    def run_multi_animation(self):
+        self.blinking = True
+        self.show_next_number()
+
+    def show_next_number(self):
+        if self.current_number_index < len(self.numbers_to_show):
+            num = self.numbers_to_show[self.current_number_index]
+            self.result.config(text=str(num))
+            self.current_number_index += 1
+            self.root.after(600, self.show_next_number)
+        else:
+            self.blinking = False
+            self.update_button_state()
+            if self.selected_gender:
+                self.gender_dots[self.selected_gender].config(text="○")
+                self.selected_gender = None
+            self.update_button_state()
+
+    def show_admin_panel(self):
+        AdminPanel(self.root, self)
+
+    def show_dev_info(self, event=None):
+        if self.admin_mode:
+            self.show_admin_panel()
+        else:
+            password = simpledialog.askstring(
+                "数据导入验证", 
+                "请输入普通用户密码进行验证:", 
+                show="*", 
+                parent=self.root
+            )
+            
+            if password:
+                self.password_manager.set_temp_password(password)
+                
+                if self.password_manager.verify_temp_password():
+                    ImportDataPanel(self.root, self)
+                else:
+                    messagebox.showerror("错误", "密码验证失败")
+                    self.password_manager.clear_temp_password()
+
+if __name__ == "__main__":
+    try:
+        hide_console()
+        root = tk.Tk()
+        app = LotteryApp(root)
+        root.mainloop()
+    except Exception as e:
+        show_console()
+        import traceback
+        traceback.print_exc()
+        input("程序崩溃，按回车键退出...")

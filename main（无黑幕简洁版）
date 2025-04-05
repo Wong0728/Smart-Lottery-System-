@@ -1,0 +1,504 @@
+import tkinter as tk
+from tkinter import font, messagebox, ttk
+from datetime import datetime, timedelta
+import random
+import os
+import sys
+import hashlib
+import pickle
+import ctypes
+
+# 隐藏控制台窗口
+def hide_console():
+    if sys.platform == "win32":
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+
+# 显示控制台窗口
+def show_console():
+    if sys.platform == "win32":
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 1)
+
+class PasswordManager:
+    def __init__(self, password_file):
+        self.password_file = password_file
+        self.ensure_file_exists()
+
+    def ensure_file_exists(self):
+        if not os.path.exists(self.password_file):
+            open(self.password_file, 'a').close()
+
+    def check_password(self, password):
+        try:
+            with open(self.password_file, 'r') as f:
+                passwords = [line.strip() for line in f if line.strip()]
+            
+            if password in passwords:
+                new_passwords = [p for p in passwords if p != password]
+                with open(self.password_file, 'w') as f:
+                    f.write('\n'.join(new_passwords))
+                return True
+            return False
+        except Exception as e:
+            messagebox.showerror("错误", f"密码验证失败：{str(e)}")
+            return False
+
+class TimeValidator:
+    def __init__(self, record_folder):
+        self.time_record = os.path.join(record_folder, ".timechk")
+        self.initial_time = datetime.now()
+        self.last_check = self.initial_time
+        self.load_time_anchor()
+
+    def create_hash(self, data):
+        return hashlib.sha256(pickle.dumps(data)).hexdigest()
+
+    def save_time_anchor(self):
+        time_data = {
+            "init": self.initial_time,
+            "last": datetime.now(),
+            "hash": self.create_hash((self.initial_time, datetime.now()))
+        }
+        with open(self.time_record, "wb") as f:
+            f.write(pickle.dumps(time_data))
+
+    def load_time_anchor(self):
+        if not os.path.exists(self.time_record):
+            self.save_time_anchor()
+            return
+        
+        try:
+            with open(self.time_record, "rb") as f:
+                data = pickle.loads(f.read())
+                
+            current_hash = self.create_hash((data["init"], data["last"]))
+            if data["hash"] != current_hash or \
+               data["last"] > datetime.now() or \
+               data["init"] > datetime.now():
+                self.handle_tampering()
+                return
+                
+            self.initial_time = data["init"]
+            self.last_check = data["last"]
+        except:
+            self.handle_tampering()
+
+    def handle_tampering(self):
+        messagebox.showerror("安全警告", "系统时间异常，功能已锁定！")
+        sys.exit(1)
+
+    def periodic_check(self):
+        now = datetime.now()
+        if now < self.last_check - timedelta(seconds=30):
+            self.handle_tampering()
+        self.last_check = now
+        self.save_time_anchor()
+
+class LotteryApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("智能抽号系统")
+        
+        # 初始化文件系统
+        self.base_folder = "ConfigEngine"
+        self.record_folder = os.path.join(os.path.dirname(sys.argv[0]), self.base_folder)
+        self.ensure_folder_exists()
+        self.modes = ["英语背书", "英语听写", "心理", "班务", "模式5"]
+        self.genders = ["boy", "girl"]
+        self.ensure_mode_folders()
+        self.ensure_gender_files()
+
+        # 基础尺寸
+        self.base_width = 600
+        self.base_height = 400
+        self.root.geometry(f"{self.base_width}x{self.base_height}")
+        self.root.minsize(self.base_width, self.base_height)
+
+        # 状态变量
+        self.blinking = False
+        self.numbers_to_show = []
+        self.current_number_index = 0
+        self.time_restriction_disabled = False
+        self.special_clicks = 0
+        self.selected_gender = None
+
+        # 系统初始化
+        self.password_manager = PasswordManager(os.path.join(self.record_folder, ".password"))
+        self.time_validator = TimeValidator(self.record_folder)
+
+        # 界面字体
+        self.base_size = 16
+        self.result_base_size = 120
+        self.base_font = font.Font(family="黑体", size=self.base_size)
+        self.result_font = font.Font(family="黑体", size=self.result_base_size)
+        self.error_font = font.Font(family="黑体", size=self.base_size-2)
+
+        # 创建界面组件
+        self.create_widgets()
+        
+        # 初始状态设置
+        self.max_num_entry.insert(0, "50")
+        self.quantity_entry.insert(0, "1")
+        self.btn.config(state=tk.DISABLED)
+        self.root.after(2000, self.periodic_check)
+
+        # 初始界面状态
+        self.update_ui_state()
+
+    def ensure_folder_exists(self):
+        if not os.path.exists(self.record_folder):
+            try:
+                os.makedirs(self.record_folder)
+            except Exception as e:
+                messagebox.showerror("错误", f"无法创建配置文件夹：{str(e)}")
+                sys.exit(1)
+
+    def ensure_mode_folders(self):
+        """确保每个模式都有对应的存储文件夹"""
+        for mode in self.modes:
+            mode_folder = os.path.join(self.record_folder, mode)
+            if not os.path.exists(mode_folder):
+                try:
+                    os.makedirs(mode_folder)
+                except Exception as e:
+                    messagebox.showerror("错误", f"无法创建模式文件夹：{str(e)}")
+
+    def ensure_gender_files(self):
+        """确保性别配置文件存在"""
+        for gender in self.genders:
+            gender_file = os.path.join(self.record_folder, f"{gender}.txt")
+            if not os.path.exists(gender_file):
+                open(gender_file, 'a').close()
+
+    def get_record_file(self, quantity):
+        """获取当前模式的记录文件路径"""
+        return os.path.join(
+            self.record_folder,
+            self.selected_mode,
+            f"{quantity}.txt"
+        )
+
+    def create_widgets(self):
+        main_frame = tk.Frame(self.root)
+        main_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+
+        # ========== 解锁模块 ==========
+        self.unlock_frame = tk.Frame(main_frame)
+        
+        # 密码输入组件
+        self.pw_label = tk.Label(self.unlock_frame, text="解锁密码：", font=self.base_font)
+        self.pw_entry = ttk.Entry(self.unlock_frame, width=10, font=self.base_font, 
+                                validate="key", show="*")
+        self.pw_entry['validatecommand'] = (self.pw_entry.register(self.validate_password_input), '%P')
+        self.pw_btn = ttk.Button(self.unlock_frame, text="解锁", command=self.check_password)
+        
+        # 提示标签
+        self.ban_label = tk.Label(self.unlock_frame, text="当前为禁止时段，请先解锁！", 
+                                 font=self.error_font, fg="red")
+        
+        # 布局
+        self.pw_label.pack(side=tk.LEFT, padx=5)
+        self.pw_entry.pack(side=tk.LEFT, padx=5)
+        self.pw_btn.pack(side=tk.LEFT, padx=5)
+        self.ban_label.pack(side=tk.TOP, pady=10)
+
+        # ========== 主功能模块 ==========
+        self.main_function_frame = tk.Frame(main_frame)
+        
+        # 模式选择
+        self.mode_frame = tk.Frame(self.main_function_frame)
+        self.selected_mode = None
+        self.mode_dots = {}
+        
+        self.mode_label = tk.Label(self.mode_frame, text="选择模式：", font=self.base_font)
+        self.mode_label.pack(side=tk.LEFT)
+        for mode in self.modes:
+            dot = tk.Label(self.mode_frame, text="○", font=("Arial", 14), cursor="hand2")
+            dot.pack(side=tk.LEFT, padx=8)
+            dot.bind("<Button-1>", lambda e, m=mode: self.toggle_mode(m))
+            self.mode_dots[mode] = dot
+            tk.Label(self.mode_frame, text=mode, font=("黑体", 10)).pack(side=tk.LEFT)
+        self.mode_frame.pack(side=tk.TOP, pady=5)
+
+        # 控制区
+        control_frame = tk.Frame(self.main_function_frame)
+        
+        # 最大号码
+        tk.Label(control_frame, text="最大号码：", font=self.base_font).grid(row=0, column=0, padx=5)
+        self.max_num_entry = tk.Entry(control_frame, font=self.base_font, width=8)
+        self.max_num_entry.grid(row=0, column=1, padx=5)
+        
+        # 抽号数量
+        tk.Label(control_frame, text="抽号数量：", font=self.base_font).grid(row=0, column=2, padx=5)
+        self.quantity_entry = tk.Entry(control_frame, font=self.base_font, width=5)
+        self.quantity_entry.grid(row=0, column=3, padx=5)
+        
+        # 新增性别选择点
+        self.gender_dots = {}
+        gender_frame = tk.Frame(control_frame)
+        self.gender_dots["boy"] = tk.Label(gender_frame, text="○", fg="blue", font=("Arial", 14), cursor="hand2")
+        self.gender_dots["boy"].pack(side=tk.LEFT)
+        self.gender_dots["boy"].bind("<Button-1>", lambda e: self.toggle_gender("boy"))
+        tk.Label(gender_frame, text="男生", font=("黑体", 10)).pack(side=tk.LEFT, padx=2)
+        
+        self.gender_dots["girl"] = tk.Label(gender_frame, text="○", fg="red", font=("Arial", 14), cursor="hand2")
+        self.gender_dots["girl"].pack(side=tk.LEFT)
+        self.gender_dots["girl"].bind("<Button-1>", lambda e: self.toggle_gender("girl"))
+        tk.Label(gender_frame, text="女生", font=("黑体", 10)).pack(side=tk.LEFT, padx=2)
+        gender_frame.grid(row=0, column=4, padx=10)
+        
+        control_frame.pack(side=tk.TOP, pady=10)
+
+        # 抽号按钮
+        self.btn = tk.Button(self.main_function_frame, text="开始抽号", command=self.start_lottery,
+                           font=self.base_font, width=18, height=2)
+        self.btn.pack(pady=15)
+
+        # 结果显示
+        result_frame = tk.Frame(self.main_function_frame)
+        self.result = tk.Label(result_frame, text="", font=self.result_font,
+                             anchor="center", justify="center", relief="ridge", borderwidth=3)
+        self.result.pack(expand=True, fill=tk.BOTH)
+        result_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=10)
+
+        # 状态栏
+        status_frame = tk.Frame(self.root)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.dev_dot = tk.Label(status_frame, text="•", font=("Arial", 20))
+        self.dev_dot.pack(side=tk.RIGHT, padx=10)
+        self.dev_dot.bind("<Button-1>", self.show_dev_info)
+        self.status_label = tk.Label(status_frame, text="就绪", font=self.base_font)
+        self.status_label.pack(side=tk.LEFT)
+
+    def validate_password_input(self, text):
+        return len(text) <= 6
+
+    def check_password(self):
+        password = self.pw_entry.get()
+        if self.password_manager.check_password(password):
+            self.time_restriction_disabled = True
+            self.pw_entry.delete(0, tk.END)
+            self.update_ui_state()
+            messagebox.showinfo("成功", "时间限制已解除！")
+        else:
+            messagebox.showerror("错误", "无效密码！")
+
+    def toggle_mode(self, mode):
+        if self.selected_mode == mode:
+            self.mode_dots[mode].config(text="○")
+            self.selected_mode = None
+        else:
+            if self.selected_mode:
+                self.mode_dots[self.selected_mode].config(text="○")
+            self.mode_dots[mode].config(text="●")
+            self.selected_mode = mode
+        self.update_button_state()
+
+    def toggle_gender(self, gender):
+        """切换性别选择状态"""
+        if self.selected_gender == gender:
+            self.gender_dots[gender].config(text="○")
+            self.selected_gender = None
+        else:
+            if self.selected_gender:
+                self.gender_dots[self.selected_gender].config(text="○")
+            self.gender_dots[gender].config(text="●")
+            self.selected_gender = gender
+        self.update_button_state()
+
+    def update_ui_state(self):
+        """更新界面显示状态"""
+        if self.time_restriction_disabled or self.is_allowed_time():
+            self.main_function_frame.pack(fill=tk.BOTH, expand=True)
+            self.unlock_frame.pack_forget()
+        else:
+            self.unlock_frame.pack(fill=tk.BOTH, expand=True)
+            self.main_function_frame.pack_forget()
+        
+        self.update_button_state()
+
+    def is_allowed_time(self):
+        """检测当前是否在允许时间段"""
+        if self.time_restriction_disabled:
+            return True
+        
+        current_time = datetime.now().time()
+        forbidden_periods = [
+            (6, 0, 7, 25), (8, 25, 8, 35),
+            (9, 15, 9, 40), (10, 20, 10, 30),
+            (11, 10, 11, 20), (12, 2, 14, 20),
+            (15, 0, 16, 15), (16, 50, 17, 5),
+            (17, 35, 23, 0)
+        ]
+        
+        current_min = current_time.hour * 60 + current_time.minute
+        for s_h, s_m, e_h, e_m in forbidden_periods:
+            start = s_h * 60 + s_m
+            end = e_h * 60 + e_m
+            if start <= current_min <= end:
+                return False
+        return True
+
+    def periodic_check(self):
+        """定时检测任务"""
+        try:
+            self.time_validator.periodic_check()
+            self.update_ui_state()
+        finally:
+            self.root.after(2000, self.periodic_check)
+
+    def update_button_state(self):
+        """更新按钮状态"""
+        try:
+            valid_max = self.max_num_entry.get().isdigit() and 1 <= int(self.max_num_entry.get()) <= 100
+            valid_quantity = self.quantity_entry.get().isdigit() and 1 <= int(self.quantity_entry.get()) <= 5
+            ready = all([
+                valid_max,
+                valid_quantity,
+                self.selected_mode is not None,
+                not self.blinking
+            ])
+            
+            self.btn.config(state=tk.NORMAL if ready else tk.DISABLED)
+        except:
+            self.btn.config(state=tk.DISABLED)
+
+    def start_lottery(self):
+        if not self.selected_mode:
+            messagebox.showwarning("提示", "请先选择模式！")
+            return
+        
+        try:
+            max_num = int(self.max_num_entry.get())
+            quantity = int(self.quantity_entry.get())
+            if not (1 <= max_num <= 100) or not (1 <= quantity <=5):
+                return
+        except:
+            return
+
+        # 获取历史记录
+        record_file = self.get_record_file(quantity)
+        try:
+            with open(record_file, 'r') as f:
+                used_numbers = set(int(line.strip()) for line in f if line.strip())
+        except FileNotFoundError:
+            os.makedirs(os.path.dirname(record_file), exist_ok=True)
+            open(record_file, 'w').close()
+            used_numbers = set()
+        except:
+            used_numbers = set()
+
+        # 获取性别限定号码
+        gender_numbers = set()
+        if self.selected_gender:
+            try:
+                with open(os.path.join(self.record_folder, f"{self.selected_gender}.txt"), 'r') as f:
+                    gender_numbers = set(int(line.strip()) for line in f if line.strip())
+            except Exception as e:
+                messagebox.showerror("错误", f"读取{self.selected_gender}名单失败：{str(e)}")
+                return
+        
+        # 计算可用号码（新增性别过滤）
+        available = set(range(1, max_num+1)) - used_numbers
+        if self.selected_gender:
+            available = available & gender_numbers  # 取交集
+            # 新增抽完检测逻辑
+            if len(available) == 0:
+                if messagebox.askyesno("提示", 
+                    f"该性别({self.selected_gender})已全部抽完，是否清空[{self.selected_mode}]模式记录？"):
+                    try:
+                        open(record_file, 'w').close()
+                        used_numbers = set()
+                        available = set(range(1, max_num+1)) & gender_numbers
+                        if len(available) == 0:
+                            messagebox.showwarning("错误", "该性别名单中没有有效号码！")
+                            return
+                    except Exception as e:
+                        messagebox.showerror("错误", f"重置失败：{str(e)}")
+                        return
+                else:
+                    return
+
+        # 号码不足时重置（修改为通用逻辑）
+        if len(available) < quantity:
+            reset = False
+            if self.selected_gender:  # 如果是性别模式提示
+                reset = messagebox.askyesno("提示",
+                    f"可用号码不足（需要{quantity}，剩余{len(available)}），是否重置[{self.selected_mode}]记录？")
+            else:
+                reset = True  # 非性别模式自动重置
+                
+            if reset:
+                try:
+                    open(record_file, 'w').close()
+                    used_numbers = set()
+                    available = set(range(1, max_num+1))
+                    if self.selected_gender:  # 重置后重新过滤性别
+                        available &= gender_numbers
+                except Exception as e:
+                    messagebox.showerror("错误", f"重置失败：{str(e)}")
+                    return
+
+        # 抽号并保存记录
+        self.numbers_to_show = random.sample(list(available), quantity)
+        try:
+            with open(record_file, 'a') as f:
+                for num in self.numbers_to_show:
+                    f.write(f"{num}\n")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存记录失败：{str(e)}")
+
+        # 后续动画逻辑
+        self.current_number_index = 0
+        self.btn.config(state=tk.DISABLED)
+
+        if quantity == 1:
+            self.run_single_animation(max_num)
+        else:
+            self.run_multi_animation()
+
+    def run_single_animation(self, max_num):
+        self.blinking = True
+        start_time = datetime.now()
+        self.animate_number(max_num, start_time)
+
+    def animate_number(self, max_num, start_time):
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 2.0:
+            self.result.config(text=str(random.randint(1, max_num)))
+            self.root.after(100, lambda: self.animate_number(max_num, start_time))
+        else:
+            self.result.config(text=str(self.numbers_to_show[0]))
+            self.blinking = False
+            self.btn.config(state=tk.NORMAL)
+
+    def run_multi_animation(self):
+        self.blinking = True
+        self.show_next_number()
+
+    def show_next_number(self):
+        if self.current_number_index < len(self.numbers_to_show):
+            num = self.numbers_to_show[self.current_number_index]
+            self.result.config(text=str(num))
+            self.current_number_index += 1
+            self.root.after(1000, self.show_next_number)
+        else:
+            self.blinking = False
+            self.btn.config(state=tk.NORMAL)
+
+    def show_dev_info(self, event):
+        self.special_clicks += 1
+        if self.special_clicks % 3 == 0:
+            messagebox.showinfo("开发者信息", 
+                "智能抽号系统\n版本：4.2\n广州市第八十六中学\n作者联系方式3026688767@qq.com")
+
+if __name__ == "__main__":
+    try:
+        hide_console()  # 隐藏控制台窗口
+        root = tk.Tk()
+        app = LotteryApp(root)
+        root.mainloop()
+    except Exception as e:
+        show_console()  # 显示控制台窗口
+        import traceback
+        traceback.print_exc()
+        input("程序崩溃，按回车键退出...")
